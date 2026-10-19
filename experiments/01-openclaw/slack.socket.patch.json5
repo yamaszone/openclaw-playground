@@ -1,0 +1,13 @@
+// Slack channel in Socket Mode (outbound WebSocket; no public URL needed).
+// Tokens are resolved from the gateway's environment, which ./stack fills
+// from SLACK_APP_TOKEN / SLACK_BOT_TOKEN in .env.
+{
+  channels: {
+    slack: {
+      enabled: true,
+      mode: "socket",
+      appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+      botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+    },
+  },
+}

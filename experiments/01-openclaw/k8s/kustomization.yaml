@@ -1,0 +1,90 @@
+# Vanilla OpenClaw gateway, straight from the upstream Kustomize manifests.
+#
+# The base and the image are pinned to the same release; bump both together.
+# The upstream base ships an older image tag, so it is overridden here.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - https://github.com/openclaw/openclaw//scripts/k8s/manifests?ref=v2026.9.9
+
+images:
+  - name: ghcr.io/openclaw/openclaw
+    newTag: 2026.9.9-slim
+
+# The tagged base predates images >= 2026.8.1, which stage SQLite snapshots
+# under $XDG_CACHE_HOME (default ~/.cache, read-only here). Point it at the PVC,
+# as upstream's docs require for newer images.
+patches:
+  - target:
+      kind: Deployment
+      name: openclaw
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: XDG_CACHE_HOME
+          value: /home/node/.openclaw/.cache
+      # Volume roots are often root-owned and group/world-writable (0777 on
+      # minikube hostpath; setgid group-writable with fsGroup on cloud disks).
+      # OpenClaw's fs-safe refuses temp workspaces under such an ancestor, so
+      # hand the state root to the gateway user before anything else runs.
+      - op: add
+        path: /spec/template/spec/initContainers/0
+        value:
+          name: fix-state-perms
+          image: busybox:1.38
+          imagePullPolicy: IfNotPresent
+          # emptyDir /tmp is 0777 (+setgid) with no sticky bit; make it a real /tmp.
+          command: ["sh", "-c", "chown 1000:1000 /home/node/.openclaw && chmod 0700 /home/node/.openclaw && chmod 1777 /tmp"]
+          securityContext:
+            runAsUser: 0
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN", "FOWNER"]
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {cpu: 50m, memory: 32Mi}
+          volumeMounts:
+            - name: openclaw-home
+              mountPath: /home/node/.openclaw
+            - name: tmp-volume
+              mountPath: /tmp
+      # Runtime `openclaw plugins install` shells out to npm, whose default
+      # cache (~/.npm) is on the read-only rootfs.
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: NPM_CONFIG_CACHE
+          value: /home/node/.openclaw/.cache/npm
+      # Optional Slack Socket Mode tokens; config refers to them by env name.
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: SLACK_APP_TOKEN
+          valueFrom: {secretKeyRef: {name: openclaw-secrets, key: SLACK_APP_TOKEN, optional: true}}
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: SLACK_BOT_TOKEN
+          valueFrom: {secretKeyRef: {name: openclaw-secrets, key: SLACK_BOT_TOKEN, optional: true}}
+      # Upstream's 2Gi limit leaves <0.5Gi headroom over an idle gateway
+      # (~1.4-1.7Gi); an in-container `openclaw plugins install` got the whole
+      # container OOMKilled. Request reflects measured idle use.
+      - op: replace
+        path: /spec/template/spec/containers/0/resources
+        value:
+          requests:
+            cpu: 250m
+            memory: 1536Mi
+          limits:
+            cpu: "2"
+            memory: 4Gi
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: openclaw-playground
+      playground/experiment: 01-openclaw
+    includeSelectors: false
